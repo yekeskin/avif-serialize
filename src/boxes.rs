@@ -30,13 +30,19 @@ impl fmt::Debug for FourCC {
 pub struct AvifFile<'data> {
     pub ftyp: FtypBox,
     pub meta: MetaBox,
+    pub moov: Option<MoovBox>,
     pub mdat: MdatBox<'data>,
 }
 
 impl AvifFile<'_> {
     /// Where the primary data starts inside the `mdat` box, for `iloc`'s offset
     fn mdat_payload_start_offset(&self) -> u32 {
-        (self.ftyp.len() + self.meta.len()
+        (self.ftyp.len() 
+            + self.meta.len()
+            + match &self.moov {
+                Some(moov) => moov.len(),
+                _ => 0
+            }
             + BASIC_BOX_SIZE) as u32 // mdat head
     }
 
@@ -62,6 +68,10 @@ impl AvifFile<'_> {
         let mut w = Writer::new(&mut tmp);
         let _ = self.ftyp.write(&mut w);
         let _ = self.meta.write(&mut w);
+        let _ = match &self.moov {
+            Some(moov) => moov.write(&mut w),
+            _ => Ok(())
+        };
         drop(w);
         out.write_all(&tmp)?;
         drop(tmp);
@@ -198,6 +208,7 @@ impl MpegBox for InfeBox {
 
 #[derive(Debug, Clone)]
 pub struct HdlrBox {
+    pub handler_type: FourCC,
 }
 
 impl MpegBox for HdlrBox {
@@ -212,7 +223,7 @@ impl MpegBox for HdlrBox {
         // and it does it the way classic MacOS used to, because Quicktime.
         b.full_box(*b"hdlr", 0)?;
         b.u32(0)?; // old MacOS file type handler
-        b.push(b"pict")?; // MacOS Quicktime subtype
+        b.push(&self.handler_type.0)?; // MacOS Quicktime subtype
         b.u32(0)?; // Firefox 92 wants all 0 here
         b.u32(0)?; // Reserved
         b.u32(0)?; // Reserved
@@ -639,6 +650,605 @@ impl MpegBox for MdatBox<'_> {
         b.basic_box(*b"mdat")?;
         for ch in &self.data_chunks {
             b.push(ch)?;
+        }
+        Ok(())
+    }
+}
+
+const UNITY_MATRIX: [u32; 9] = [0x00010000, 0, 0, 0, 0x00010000, 0, 0, 0, 0x40000000];
+
+#[derive(Debug, Clone)]
+pub struct MoovBox {
+    pub mvhd: MvhdBox,
+    pub tracks: Vec<TrakBox>,
+}
+
+impl MpegBox for MoovBox {
+    #[inline]
+    fn len(&self) -> usize {
+        BASIC_BOX_SIZE
+            + self.mvhd.len()
+            + self.tracks.iter().map(|b| b.len()).sum::<usize>()
+    }
+
+    fn write<B: WriterBackend>(&self, w: &mut Writer<B>) -> Result<(), B::Error> {
+        let mut b = w.new_box(self.len());
+        b.basic_box(*b"moov")?;
+        self.mvhd.write(&mut b)?;
+        for track in &self.tracks {
+            track.write(&mut b)?;
+        }
+        Ok(())
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct MvhdBox {
+    pub creation_time: u64,
+    pub modification_time: u64,
+    pub timescale: u32,
+    pub duration: u64,
+    pub next_track_id: u32,
+}
+
+impl MpegBox for MvhdBox {
+    #[inline(always)]
+    fn len(&self) -> usize {
+        FULL_BOX_SIZE + 108
+    }
+
+    fn write<B: WriterBackend>(&self, w: &mut Writer<B>) -> Result<(), B::Error> {
+        let mut b = w.new_box(self.len());
+        b.full_box(*b"mvhd", 1)?;
+        b.u64(self.creation_time)?;
+        b.u64(self.modification_time)?;
+        b.u32(self.timescale)?;
+        b.u64(self.duration)?;
+        b.u32(0x00010000)?; // rate
+        b.u16(0x0100)?; // volume
+        b.u16(0)?; // reserved
+        b.u32(0)?; // reserved
+        b.u32(0)?; // reserved
+        for data in UNITY_MATRIX {
+            b.u32(data)?;
+        }
+        b.u32(0)?; // predefined
+        b.u32(0)?; // predefined
+        b.u32(0)?; // predefined
+        b.u32(0)?; // predefined
+        b.u32(0)?; // predefined
+        b.u32(0)?; // predefined
+        b.u32(self.next_track_id)
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct TrakBox {
+    pub tkhd: TkhdBox,
+    pub tref: Option<TrefBox>,
+    // pub edts: EdtsBox,
+    pub meta: Option<MetaBox>,
+    pub mdia: MdiaBox,
+}
+
+impl MpegBox for TrakBox {
+    #[inline]
+    fn len(&self) -> usize {
+        BASIC_BOX_SIZE
+            + self.tkhd.len()
+            + match &self.tref {
+                Some(tref) => tref.len(),
+                _ => 0,
+            }
+            + match &self.meta {
+                Some(meta) => meta.len(),
+                _ => 0,
+            }
+            // + self.edts.len()
+            + self.mdia.len()
+    }
+
+    fn write<B: WriterBackend>(&self, w: &mut Writer<B>) -> Result<(), B::Error> {
+        let mut b = w.new_box(self.len());
+        b.basic_box(*b"trak")?;
+        self.tkhd.write(&mut b)?;
+        match &self.tref {
+            Some(tref) => tref.write(&mut b)?,
+            _ => (),
+        }
+        match &self.meta {
+            Some(meta) => meta.write(&mut b)?,
+            _ => (),
+        }
+        // self.edts.write(&mut b)?;
+        self.mdia.write(&mut b)
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct TkhdBox {
+    pub creation_time: u64,
+    pub modification_time: u64,
+    pub track_id: u32,
+    pub duration: u64,
+    pub width: u32,
+    pub height: u32,
+}
+
+impl MpegBox for TkhdBox {
+    #[inline(always)]
+    fn len(&self) -> usize {
+        FULL_BOX_SIZE + 92
+    }
+
+    fn write<B: WriterBackend>(&self, w: &mut Writer<B>) -> Result<(), B::Error> {
+        let mut b = w.new_box(self.len());
+        b.full_box(*b"tkhd", 1)?;
+        b.u64(self.creation_time)?;
+        b.u64(self.modification_time)?;
+        b.u32(self.track_id)?;
+        b.u32(0)?; // reserved
+        b.u64(self.duration)?;
+        b.u32(0)?; // reserved
+        b.u32(0)?; // reserved
+        b.u16(0)?; // layer
+        b.u16(0)?; // alternate_group
+        b.u16(0)?; // volume
+        b.u16(0)?; // reserved
+        for data in UNITY_MATRIX {
+            b.u32(data)?;
+        }
+        b.u32(self.width)?;
+        b.u32(self.height)
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct TrefBox {
+    pub ref_type: ReftypeBox,
+}
+
+impl MpegBox for TrefBox {
+    #[inline(always)]
+    fn len(&self) -> usize {
+        BASIC_BOX_SIZE + self.ref_type.len()
+    }
+
+    fn write<B: WriterBackend>(&self, w: &mut Writer<B>) -> Result<(), B::Error> {
+        let mut b = w.new_box(self.len());
+        b.basic_box(*b"tref")?;
+        self.ref_type.write(&mut b)
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct ReftypeBox {
+    pub typ: FourCC,
+    pub to_id: u32,
+}
+
+impl MpegBox for ReftypeBox {
+    #[inline(always)]
+    fn len(&self) -> usize {
+        BASIC_BOX_SIZE + 4
+    }
+
+    fn write<B: WriterBackend>(&self, w: &mut Writer<B>) -> Result<(), B::Error> {
+        let mut b = w.new_box(self.len());
+        b.basic_box(self.typ.0)?;
+        b.u32(self.to_id)
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct MdiaBox {
+    pub mdhd: MdhdBox,
+    pub hdlr: HdlrBox,
+    pub minf: MinfBox,
+}
+
+impl MpegBox for MdiaBox {
+    #[inline]
+    fn len(&self) -> usize {
+        BASIC_BOX_SIZE
+        + self.mdhd.len()
+        + self.hdlr.len()
+        + self.minf.len()
+    }
+
+    fn write<B: WriterBackend>(&self, w: &mut Writer<B>) -> Result<(), B::Error> {
+        let mut b = w.new_box(self.len());
+        b.basic_box(*b"mdia")?;
+        self.mdhd.write(&mut b)?;
+        self.hdlr.write(&mut b)?;
+        self.minf.write(&mut b)
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct MdhdBox {
+    pub creation_time: u64,
+    pub modification_time: u64,
+    pub timescale: u32,
+    pub duration: u64,
+}
+
+impl MpegBox for MdhdBox {
+    #[inline(always)]
+    fn len(&self) -> usize {
+        FULL_BOX_SIZE + 32
+    }
+
+    fn write<B: WriterBackend>(&self, w: &mut Writer<B>) -> Result<(), B::Error> {
+        let mut b = w.new_box(self.len());
+        b.full_box(*b"mdhd", 1)?;
+        b.u64(self.creation_time)?;
+        b.u64(self.modification_time)?;
+        b.u32(self.timescale)?;
+        b.u64(self.duration)?;
+        b.u16(21956)?; // 1 bit padding (0) + 15 bit language ("und")
+        b.u16(0) // pre_defined
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct MinfBox {
+    // pub nmhd: NmhdBox,
+    pub vmhd: VmhdBox,
+    pub dinf: DinfBox,
+    pub stbl: StblBox,
+}
+
+impl MpegBox for MinfBox {
+    #[inline]
+    fn len(&self) -> usize {
+        BASIC_BOX_SIZE
+            + self.vmhd.len()
+            + self.dinf.len()
+            + self.stbl.len()
+    }
+
+    fn write<B: WriterBackend>(&self, w: &mut Writer<B>) -> Result<(), B::Error> {
+        let mut b = w.new_box(self.len());
+        b.basic_box(*b"minf")?;
+        self.vmhd.write(&mut b)?;
+        self.dinf.write(&mut b)?;
+        self.stbl.write(&mut b)
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct VmhdBox {}
+
+impl MpegBox for VmhdBox {
+    #[inline(always)]
+    fn len(&self) -> usize {
+        FULL_BOX_SIZE + 8
+    }
+
+    fn write<B: WriterBackend>(&self, w: &mut Writer<B>) -> Result<(), B::Error> {
+        let mut b = w.new_box(self.len());
+        b.full_box(*b"vmhd", 1)?;
+        b.u16(0)?; // graphicsmode
+        b.u16(0)?; // opcolor
+        b.u16(0)?; // opcolor
+        b.u16(0) // opcolor
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct DinfBox {
+    pub dref: DrefBox,
+}
+
+impl MpegBox for DinfBox {
+    #[inline(always)]
+    fn len(&self) -> usize {
+        BASIC_BOX_SIZE + self.dref.len()
+    }
+
+    fn write<B: WriterBackend>(&self, w: &mut Writer<B>) -> Result<(), B::Error> {
+        let mut b = w.new_box(self.len());
+        b.basic_box(*b"dinf")?;
+        self.dref.write(&mut b)
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct DrefBox {
+    pub url: UrlBox,
+}
+
+impl MpegBox for DrefBox {
+    #[inline(always)]
+    fn len(&self) -> usize {
+        FULL_BOX_SIZE + 4 + self.url.len()
+    }
+
+    fn write<B: WriterBackend>(&self, w: &mut Writer<B>) -> Result<(), B::Error> {
+        let mut b = w.new_box(self.len());
+        b.full_box(*b"dref", 0)?;
+        b.u32(1)?; // entry_count
+        self.url.write(&mut b)
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct UrlBox {}
+
+impl MpegBox for UrlBox {
+    #[inline(always)]
+    fn len(&self) -> usize {
+        FULL_BOX_SIZE
+    }
+
+    fn write<B: WriterBackend>(&self, w: &mut Writer<B>) -> Result<(), B::Error> {
+        let mut b = w.new_box(self.len());
+        b.full_box(*b"url ", 0)
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct StblBox {
+    pub stsd: StsdBox,
+    pub stts: SttsBox,
+    pub stsc: StscBox,
+    pub stsz: StszBox,
+    pub stco: StcoBox,
+    pub stss: Option<StssBox>
+}
+
+impl MpegBox for StblBox {
+    #[inline]
+    fn len(&self) -> usize {
+        BASIC_BOX_SIZE
+            + self.stsd.len()
+            + self.stts.len()
+            + self.stsc.len()
+            + self.stsz.len()
+            + self.stco.len()
+            + match &self.stss {
+                Some(stss) => stss.len(),
+                _ => 0,
+            }
+    }
+
+    fn write<B: WriterBackend>(&self, w: &mut Writer<B>) -> Result<(), B::Error> {
+        let mut b = w.new_box(self.len());
+        b.basic_box(*b"stbl")?;
+        self.stsd.write(&mut b)?;
+        self.stts.write(&mut b)?;
+        self.stsc.write(&mut b)?;
+        self.stsz.write(&mut b)?;
+        self.stco.write(&mut b)?;
+        match &self.stss {
+            Some(stss) => stss.write(&mut b)?,
+            _ => (),
+        }
+        Ok(())
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct StsdBox {
+    pub entry: SampleEntryBox
+}
+
+impl MpegBox for StsdBox {
+    #[inline]
+    fn len(&self) -> usize {
+        FULL_BOX_SIZE
+            + 4
+            + self.entry.len()
+    }
+
+    fn write<B: WriterBackend>(&self, w: &mut Writer<B>) -> Result<(), B::Error> {
+        let mut b = w.new_box(self.len());
+        b.full_box(*b"stsd", 0)?;
+        b.u32(1)?; // entry_count
+        self.entry.write(&mut b)
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct SampleEntryBox {
+    pub typ: FourCC,
+    pub width: u16,
+    pub height: u16,
+    pub config: Av1CBox,
+    pub ccst: CcstBox,
+    pub auxi: Option<AuxiBox>,
+}
+
+impl MpegBox for SampleEntryBox {
+    #[inline(always)]
+    fn len(&self) -> usize {
+        BASIC_BOX_SIZE + 84
+        + self.config.len()
+        + self.ccst.len()
+        + match &self.auxi {
+            Some(auxi) => auxi.len(),
+            _ => 0,
+        }
+    }
+
+    fn write<B: WriterBackend>(&self, w: &mut Writer<B>) -> Result<(), B::Error> {
+        let mut b = w.new_box(self.len());
+        b.basic_box(self.typ.0)?;
+        b.u8(0)?; // reserved
+        b.u8(0)?; // reserved
+        b.u8(0)?; // reserved
+        b.u8(0)?; // reserved
+        b.u8(0)?; // reserved
+        b.u8(0)?; // reserved
+        b.u16(1)?; // data_reference_index
+        b.u16(0)?; // pre_defined
+        b.u16(0)?; // reserved
+        b.u32(0)?; // pre_defined
+        b.u32(0)?; // pre_defined
+        b.u32(0)?; // pre_defined
+        b.u16(self.width)?;
+        b.u16(self.height)?;
+        b.u32(0x00480000)?; // horiz_resolution
+        b.u32(0x00480000)?; // vert_resolution
+        b.u32(0)?; // reserved
+        b.u16(1)?; // frame_count
+        b.push(b"\x12AOM Coding\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00")?; // compressorname
+        b.u32(0x0018)?; // depth
+        b.u16(0xffff)?; // pre_defined
+        self.config.write(&mut b)?;
+        self.ccst.write(&mut b)?;
+        match &self.auxi {
+            Some(auxi) => auxi.write(&mut b)?,
+            _ => (),
+        }
+        Ok(())
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct CcstBox {}
+
+impl MpegBox for CcstBox {
+    #[inline(always)]
+    fn len(&self) -> usize {
+        FULL_BOX_SIZE + 4
+    }
+
+    fn write<B: WriterBackend>(&self, w: &mut Writer<B>) -> Result<(), B::Error> {
+        let mut b = w.new_box(self.len());
+        b.full_box(*b"ccst", 0)?;
+        let data =
+            u32::from(false) << 31 | // all_ref_pics_intra 1 bit
+            u32::from(true) << 30 | // intra_pred_used 1 bit
+            u32::from(15 as u8) << 26 | // max_ref_per_pic 4 bits
+            0x00000000; // reserved 26 bits
+        b.u32(data)
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct AuxiBox {
+    pub aux_track_type: &'static str,
+}
+
+impl MpegBox for AuxiBox {
+    fn len(&self) -> usize {
+        FULL_BOX_SIZE + self.aux_track_type.len()
+    }
+
+    fn write<B: WriterBackend>(&self, w: &mut Writer<B>) -> Result<(), B::Error> {
+        let mut b = w.new_box(self.len());
+        b.full_box(*b"auxi", 0)?;
+        b.push(self.aux_track_type.as_bytes())
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct SttsBox {
+    pub entry_count: u32,
+    pub sample_delta: Vec<ArrayVec<u32, 2>>,
+}
+
+impl MpegBox for SttsBox {
+    #[inline(always)]
+    fn len(&self) -> usize {
+        FULL_BOX_SIZE + 4 + (self.sample_delta.len() * 4)
+    }
+
+    fn write<B: WriterBackend>(&self, w: &mut Writer<B>) -> Result<(), B::Error> {
+        let mut b = w.new_box(self.len());
+        b.full_box(*b"stts", 0)?;
+        b.u32(self.entry_count)?;
+        for data in &self.sample_delta {
+            b.u32(data[0])?;
+            b.u32(data[1])?;
+        }
+        Ok(())
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct StscBox {
+    pub samples_per_chunk: u32,
+}
+
+impl MpegBox for StscBox {
+    #[inline(always)]
+    fn len(&self) -> usize {
+        FULL_BOX_SIZE + 16
+    }
+
+    fn write<B: WriterBackend>(&self, w: &mut Writer<B>) -> Result<(), B::Error> {
+        let mut b = w.new_box(self.len());
+        b.full_box(*b"stsc", 0)?;
+        b.u32(1)?; // entry_count
+        b.u32(1)?; // first_chunk
+        b.u32(self.samples_per_chunk)?;
+        b.u32(1) // sample_description_index
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct StszBox {
+    pub sample_count: u32,
+    pub entry_size: Vec<u32>,
+}
+
+impl MpegBox for StszBox {
+    #[inline(always)]
+    fn len(&self) -> usize {
+        FULL_BOX_SIZE + 8 + (self.entry_size.len() * 4)
+    }
+
+    fn write<B: WriterBackend>(&self, w: &mut Writer<B>) -> Result<(), B::Error> {
+        let mut b = w.new_box(self.len());
+        b.full_box(*b"stsz", 0)?;
+        b.u32(0)?; // sample_size
+        b.u32(self.sample_count)?;
+        for data in &self.entry_size {
+            b.u32(*data)?;
+        }
+        Ok(())
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct StcoBox {}
+
+impl MpegBox for StcoBox {
+    #[inline(always)]
+    fn len(&self) -> usize {
+        FULL_BOX_SIZE + 8
+    }
+
+    fn write<B: WriterBackend>(&self, w: &mut Writer<B>) -> Result<(), B::Error> {
+        let mut b = w.new_box(self.len());
+        b.full_box(*b"stco", 0)?;
+        b.u32(1)?; // entry_count
+        // mdat fixup?
+        b.u32(1) // chunk_offset
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct StssBox {
+    pub entry_count: u32,
+    pub sample_number: Vec<u32>,
+}
+
+impl MpegBox for StssBox {
+    #[inline(always)]
+    fn len(&self) -> usize {
+        FULL_BOX_SIZE + 4 + (self.sample_number.len() * 4)
+    }
+
+    fn write<B: WriterBackend>(&self, w: &mut Writer<B>) -> Result<(), B::Error> {
+        let mut b = w.new_box(self.len());
+        b.full_box(*b"stss", 0)?;
+        b.u32(self.entry_count)?;
+        for data in &self.sample_number {
+            b.u32(*data)?;
         }
         Ok(())
     }

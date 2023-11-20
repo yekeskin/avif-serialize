@@ -252,7 +252,7 @@ impl Aviffy {
                 compatible_brands,
             },
             meta: MetaBox {
-                hdlr: HdlrBox {},
+                hdlr: HdlrBox { handler_type: FourCC(*b"pict")},
                 iinf: IinfBox { items: image_items },
                 pitm: PitmBox(color_image_id),
                 iloc: IlocBox { items: iloc_items },
@@ -266,6 +266,7 @@ impl Aviffy {
                 },
                 iref: irefs,
             },
+            moov: None,
             // Here's the actual data. If HEIF wasn't such a kitchen sink, this
             // would have been the only data this file needs.
             mdat: MdatBox {
