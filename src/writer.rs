@@ -59,9 +59,9 @@ impl<'p, 'w, B: WriterBackend> Writer<'p, 'w, B> {
     }
 
     #[inline(always)]
-    pub fn full_box(&mut self, typ: [u8; 4], version: u8) -> Result<(), B::Error> {
+    pub fn full_box(&mut self, typ: [u8; 4], version: u8, flags: u32) -> Result<(), B::Error> {
         self.basic_box(typ)?;
-        self.push(&[version, 0, 0, 0])
+        self.push(&[version, ((flags >> 16) & 0xff) as u8,  ((flags >> 8) & 0xff) as u8,  ((flags >> 0) & 0xff) as u8])
     }
 
     #[inline]
