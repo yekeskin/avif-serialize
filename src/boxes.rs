@@ -62,12 +62,13 @@ impl AvifFile<'_> {
     }
 
     fn fix_stco_positions(&mut self) {
-        let start_offset = self.mdat_payload_start_offset();
+        let mut start_offset = self.mdat_payload_start_offset();
 
         match self.moov.as_mut() {
             Some(_moov) => {
-                for track in _moov.tracks.iter_mut() {
-                    track.mdia.minf.stbl.stco.chunk_offset = start_offset;
+                for i in (0.._moov.tracks.len()).rev() {
+                    _moov.tracks[i].mdia.minf.stbl.stco.chunk_offset = start_offset;
+                    start_offset += _moov.tracks[i].mdia.minf.stbl.stsz.entry_size.clone().into_iter().reduce(|acc, e| acc + e).unwrap();
                 }
             },
             _ => ()
