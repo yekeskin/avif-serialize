@@ -1080,6 +1080,7 @@ pub struct SampleEntryBox {
     pub config: Av1CBox,
     pub ccst: CcstBox,
     pub auxi: Option<AuxiBox>,
+    pub colr: Option<ColrBox>,
 }
 
 impl MpegBox for SampleEntryBox {
@@ -1090,6 +1091,10 @@ impl MpegBox for SampleEntryBox {
         + self.ccst.len()
         + match &self.auxi {
             Some(auxi) => auxi.len(),
+            _ => 0,
+        }
+        + match &self.colr {
+            Some(colr) => colr.len(),
             _ => 0,
         }
     }
@@ -1119,6 +1124,10 @@ impl MpegBox for SampleEntryBox {
         b.u16(0x0018)?; // depth
         b.u16(0xffff)?; // pre_defined
         self.config.write(&mut b)?;
+        match &self.colr {
+            Some(colr) => colr.write(&mut b)?,
+            _ => (),
+        }
         self.ccst.write(&mut b)?;
         match &self.auxi {
             Some(auxi) => auxi.write(&mut b)?,

@@ -348,6 +348,7 @@ impl Aviffy {
                                             width: width as u16,
                                             height: height as u16,
                                             config: color_config,
+                                            colr: Some(self.colr.clone()),
                                             ccst: CcstBox {},
                                             auxi: None
                                         }
@@ -437,6 +438,7 @@ impl Aviffy {
                                         width: width as u16,
                                         height: height as u16,
                                         config: alpha_config,
+                                        colr: None,
                                         ccst: CcstBox {},
                                         auxi: Some(AuxiBox { aux_track_type: "urn:mpeg:mpegB:cicp:systems:auxiliary:alpha" })
                                     }
