@@ -295,7 +295,7 @@ impl Aviffy {
                     creation_time: now,
                     modification_time: now,
                     timescale: timescale,
-                    duration: u64::MAX, // Infinite Repetition
+                    duration: media_duration,
                     next_track_id: match alpha_frames {
                         Some(_) => 2,
                         _ => 1
@@ -307,7 +307,7 @@ impl Aviffy {
                             creation_time: now,
                             modification_time: now,
                             track_id: 1,
-                            duration: u64::MAX, // Infinite Repetition
+                            duration: media_duration,
                             width: width << 16, 
                             height: height << 16
                         },
@@ -407,7 +407,7 @@ impl Aviffy {
                         creation_time: now,
                         modification_time: now,
                         track_id: 2,
-                        duration: u64::MAX, // Infinite Repetition
+                        duration: media_duration,
                         width: width << 16, 
                         height: height << 16
                     },
