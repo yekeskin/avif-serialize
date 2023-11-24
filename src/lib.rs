@@ -464,11 +464,16 @@ impl Aviffy {
 
         compatible_brands.push(FourCC(*b"avif"));
         match moov_box {
-            Some(_) => compatible_brands.push(FourCC(*b"avis")),
+            Some(_) => {
+                compatible_brands.push(FourCC(*b"avis"));
+                compatible_brands.push(FourCC(*b"msf1"));
+                compatible_brands.push(FourCC(*b"iso8"));
+            }
             _ => ()
         }
         compatible_brands.push(FourCC(*b"mif1"));
         compatible_brands.push(FourCC(*b"miaf"));
+        compatible_brands.push(FourCC(*b"MA1A"));
         AvifFile {
             ftyp: FtypBox {
                 major_brand: match moov_box {
