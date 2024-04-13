@@ -32,6 +32,7 @@ pub struct AvifFile<'data> {
     pub meta: MetaBox,
     pub moov: Option<MoovBox>,
     pub mdat: MdatBox<'data>,
+    pub exif: Option<ExifBox>,
 }
 
 impl AvifFile<'_> {
@@ -97,6 +98,10 @@ impl AvifFile<'_> {
         let mut out = IO(out);
         let mut w = Writer::new(&mut out);
         self.mdat.write(&mut w)?;
+        let _ = match &self.exif {
+            Some(exif) => exif.write(&mut w),
+            _ => Ok(())
+        };
         Ok(())
     }
 }
@@ -1282,6 +1287,26 @@ impl MpegBox for StssBox {
         for data in &self.sample_number {
             b.u32(*data)?;
         }
+        Ok(())
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct ExifBox {
+    pub header_offset: u32,
+    pub payload: Vec<u8>,
+}
+
+impl MpegBox for ExifBox {
+    #[inline(always)]
+    fn len(&self) -> usize {
+        4 + self.payload.len()
+    }
+
+    fn write<B: WriterBackend>(&self, w: &mut Writer<B>) -> Result<(), B::Error> {
+        let mut b = w.new_box(self.len());
+        b.u32(self.header_offset)?;
+        b.push(&self.payload)?;
         Ok(())
     }
 }

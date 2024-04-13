@@ -40,8 +40,8 @@ pub struct Aviffy {
 /// Color and alpha must have the same dimensions and depth.
 ///
 /// Data is written (streamed) to `into_output`.
-pub fn serialize<W: io::Write>(into_output: W, color_av1_data: &[u8], alpha_av1_data: Option<&[u8]>, width: u32, height: u32, depth_bits: u8, timescale: u32, color_frames: Option<&[FrameInfo]>, alpha_frames: Option<&[FrameInfo]>) -> io::Result<()> {
-    Aviffy::new().write(into_output, color_av1_data, alpha_av1_data, width, height, depth_bits, timescale, color_frames, alpha_frames)
+pub fn serialize<W: io::Write>(into_output: W, color_av1_data: &[u8], alpha_av1_data: Option<&[u8]>, width: u32, height: u32, depth_bits: u8, timescale: u32, color_frames: Option<&[FrameInfo]>, alpha_frames: Option<&[FrameInfo]>, exif_data: &[u8]) -> io::Result<()> {
+    Aviffy::new().write(into_output, color_av1_data, alpha_av1_data, width, height, depth_bits, timescale, color_frames, alpha_frames, exif_data)
 }
 
 impl Aviffy {
@@ -109,11 +109,11 @@ impl Aviffy {
     /// Color and alpha must have the same dimensions and depth.
     ///
     /// Data is written (streamed) to `into_output`.
-    pub fn write<W: io::Write>(&self, into_output: W, color_av1_data: &[u8], alpha_av1_data: Option<&[u8]>, width: u32, height: u32, depth_bits: u8, timescale: u32, color_frames: Option<&[FrameInfo]>, alpha_frames: Option<&[FrameInfo]>) -> io::Result<()> {
-        self.make_boxes(color_av1_data, alpha_av1_data, width, height, depth_bits, timescale, color_frames, alpha_frames).write(into_output)
+    pub fn write<W: io::Write>(&self, into_output: W, color_av1_data: &[u8], alpha_av1_data: Option<&[u8]>, width: u32, height: u32, depth_bits: u8, timescale: u32, color_frames: Option<&[FrameInfo]>, alpha_frames: Option<&[FrameInfo]>, exif_data: &[u8]) -> io::Result<()> {
+        self.make_boxes(color_av1_data, alpha_av1_data, width, height, depth_bits, timescale, color_frames, alpha_frames, exif_data).write(into_output)
     }
 
-    fn make_boxes<'data>(&self, color_av1_data: &'data [u8], alpha_av1_data: Option<&'data [u8]>, width: u32, height: u32, depth_bits: u8, timescale: u32, color_frames: Option<&[FrameInfo]>, alpha_frames: Option<&[FrameInfo]>) -> AvifFile<'data> {
+    fn make_boxes<'data>(&self, color_av1_data: &'data [u8], alpha_av1_data: Option<&'data [u8]>, width: u32, height: u32, depth_bits: u8, timescale: u32, color_frames: Option<&[FrameInfo]>, alpha_frames: Option<&[FrameInfo]>, exif_data: &[u8]) -> AvifFile<'data> {
         let mut image_items = ArrayVec::new();
         let mut iloc_items = ArrayVec::new();
         let mut compatible_brands = vec![];
@@ -123,6 +123,10 @@ impl Aviffy {
         let mut ipco = IpcoBox::new();
         let color_image_id = 1;
         let alpha_image_id = 2;
+        let exif_image_id = match alpha_av1_data {
+            Some(_) => 3,
+            _ => 2
+        };
         const ESSENTIAL_BIT: u8 = 0x80;
         let color_depth_bits = depth_bits;
         let alpha_depth_bits = depth_bits; // Sadly, the spec requires these to match.
@@ -246,6 +250,30 @@ impl Aviffy {
             });
             data_chunks.push(color_av1_data);
         };
+
+        if exif_data.len() > 0 {
+            image_items.push(InfeBox {
+                id: exif_image_id,
+                typ: FourCC(*b"Exif"),
+                name: "Exif",
+            });
+            iloc_items.push(IlocItem {
+                id: exif_image_id,
+                extents: [
+                    IlocExtent {
+                        offset: IlocOffset::Relative(0),
+                        len: exif_data.len(),
+                    },
+                ].into(),
+            });
+            irefs.push(IrefBox {
+                entry: IrefEntryBox {
+                    from_id: exif_image_id,
+                    to_id: color_image_id,
+                    typ: FourCC(*b"cdsc"),
+                },
+            });
+        }
 
         let mut moov_box: Option<MoovBox> = None;
         if let Some(_color_frames) = color_frames {
@@ -504,19 +532,26 @@ impl Aviffy {
             mdat: MdatBox {
                 data_chunks,
             },
+            exif: match exif_data.len() {
+                0 => None,
+                _ => Some(ExifBox {
+                    header_offset: 0,
+                    payload: exif_data.to_vec(),
+                })
+            },
         }
     }
 
-    #[must_use] pub fn to_vec(&self, color_av1_data: &[u8], alpha_av1_data: Option<&[u8]>, width: u32, height: u32, depth_bits: u8, timescale: u32, color_frames: Option<&[FrameInfo]>, alpha_frames: Option<&[FrameInfo]>) -> Vec<u8> {
+    #[must_use] pub fn to_vec(&self, color_av1_data: &[u8], alpha_av1_data: Option<&[u8]>, width: u32, height: u32, depth_bits: u8, timescale: u32, color_frames: Option<&[FrameInfo]>, alpha_frames: Option<&[FrameInfo]>, exif_data: &[u8]) -> Vec<u8> {
         let mut out = Vec::with_capacity(color_av1_data.len() + alpha_av1_data.map_or(0, |a| a.len()) + 410);
-        self.write(&mut out, color_av1_data, alpha_av1_data, width, height, depth_bits, timescale, color_frames, alpha_frames).unwrap(); // Vec can't fail
+        self.write(&mut out, color_av1_data, alpha_av1_data, width, height, depth_bits, timescale, color_frames, alpha_frames, exif_data).unwrap(); // Vec can't fail
         out
     }
 }
 
 /// See [`serialize`] for description. This one makes a `Vec` instead of using `io::Write`.
-#[must_use] pub fn serialize_to_vec(color_av1_data: &[u8], alpha_av1_data: Option<&[u8]>, width: u32, height: u32, depth_bits: u8, timescale: u32, color_frames: Option<&[FrameInfo]>, alpha_frames: Option<&[FrameInfo]>) -> Vec<u8> {
-    Aviffy::new().to_vec(color_av1_data, alpha_av1_data, width, height, depth_bits, timescale, color_frames, alpha_frames)
+#[must_use] pub fn serialize_to_vec(color_av1_data: &[u8], alpha_av1_data: Option<&[u8]>, width: u32, height: u32, depth_bits: u8, timescale: u32, color_frames: Option<&[FrameInfo]>, alpha_frames: Option<&[FrameInfo]>, exif_data: &[u8]) -> Vec<u8> {
+    Aviffy::new().to_vec(color_av1_data, alpha_av1_data, width, height, depth_bits, timescale, color_frames, alpha_frames, exif_data)
 }
 
 pub struct FrameInfo {
@@ -528,7 +563,8 @@ pub struct FrameInfo {
 #[test]
 fn test_roundtrip_parse_mp4() {
     let test_img = b"av12356abc";
-    let avif = serialize_to_vec(test_img, None, 10, 20, 8, 1, None, None);
+    let exif_data = b"";
+    let avif = serialize_to_vec(test_img, None, 10, 20, 8, 1, None, None, exif_data);
 
     let ctx = mp4parse::read_avif(&mut avif.as_slice(), mp4parse::ParseStrictness::Normal).unwrap();
 
@@ -539,7 +575,8 @@ fn test_roundtrip_parse_mp4() {
 fn test_roundtrip_parse_mp4_alpha() {
     let test_img = b"av12356abc";
     let test_a = b"alpha";
-    let avif = serialize_to_vec(test_img, Some(test_a), 10, 20, 8, 1, None, None);
+    let exif_data = b"";
+    let avif = serialize_to_vec(test_img, Some(test_a), 10, 20, 8, 1, None, None, exif_data);
 
     let ctx = mp4parse::read_avif(&mut avif.as_slice(), mp4parse::ParseStrictness::Normal).unwrap();
 
@@ -551,7 +588,8 @@ fn test_roundtrip_parse_mp4_alpha() {
 fn test_roundtrip_parse_avif() {
     let test_img = [1,2,3,4,5,6];
     let test_alpha = [77,88,99];
-    let avif = serialize_to_vec(&test_img, Some(&test_alpha), 10, 20, 8, 1, None, None);
+    let exif_data: [u8; 0] = [];
+    let avif = serialize_to_vec(&test_img, Some(&test_alpha), 10, 20, 8, 1, None, None, &exif_data);
 
     let ctx = avif_parse::read_avif(&mut avif.as_slice()).unwrap();
 
@@ -563,9 +601,10 @@ fn test_roundtrip_parse_avif() {
 fn test_roundtrip_parse_avif_colr() {
     let test_img = [1,2,3,4,5,6];
     let test_alpha = [77,88,99];
+    let exif_data: [u8; 0] = [];
     let avif = Aviffy::new()
         .matrix_coefficients(constants::MatrixCoefficients::Bt709)
-        .to_vec(&test_img, Some(&test_alpha), 10, 20, 8, 1, None, None);
+        .to_vec(&test_img, Some(&test_alpha), 10, 20, 8, 1, None, None, &exif_data);
 
     let ctx = avif_parse::read_avif(&mut avif.as_slice()).unwrap();
 
@@ -577,7 +616,8 @@ fn test_roundtrip_parse_avif_colr() {
 fn premultiplied_flag() {
     let test_img = [1,2,3,4];
     let test_alpha = [55,66,77,88,99];
-    let avif = Aviffy::new().premultiplied_alpha(true).to_vec(&test_img, Some(&test_alpha), 5, 5, 8, 1, None, None);
+    let exif_data: [u8; 0] = [];
+    let avif = Aviffy::new().premultiplied_alpha(true).to_vec(&test_img, Some(&test_alpha), 5, 5, 8, 1, None, None, &exif_data);
 
     let ctx = avif_parse::read_avif(&mut avif.as_slice()).unwrap();
 
