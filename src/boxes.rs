@@ -32,7 +32,6 @@ pub struct AvifFile<'data> {
     pub meta: MetaBox,
     pub moov: Option<MoovBox>,
     pub mdat: MdatBox<'data>,
-    pub exif: Option<ExifBox>,
 }
 
 impl AvifFile<'_> {
@@ -98,10 +97,6 @@ impl AvifFile<'_> {
         let mut out = IO(out);
         let mut w = Writer::new(&mut out);
         self.mdat.write(&mut w)?;
-        let _ = match &self.exif {
-            Some(exif) => exif.write(&mut w),
-            _ => Ok(())
-        };
         Ok(())
     }
 }
@@ -664,12 +659,16 @@ impl MpegBox for IlocBox {
 #[derive(Debug, Clone)]
 pub struct MdatBox<'data> {
     pub data_chunks: ArrayVec<&'data [u8], 4>,
+    pub exif: Option<ExifBox>,
 }
 
 impl MpegBox for MdatBox<'_> {
     #[inline(always)]
     fn len(&self) -> usize {
-        BASIC_BOX_SIZE + self.data_chunks.iter().map(|c| c.len()).sum::<usize>()
+        BASIC_BOX_SIZE  + match &self.exif {
+            Some(_exif) => _exif.len(),
+            _ => 0
+        } + self.data_chunks.iter().map(|c| c.len()).sum::<usize>()
     }
 
     fn write<B: WriterBackend>(&self, w: &mut Writer<B>) -> Result<(), B::Error> {
@@ -678,6 +677,10 @@ impl MpegBox for MdatBox<'_> {
         for ch in &self.data_chunks {
             b.push(ch)?;
         }
+        let _ = match &self.exif {
+            Some(exif) => exif.write(&mut b),
+            _ => Ok(())
+        };
         Ok(())
     }
 }

@@ -261,7 +261,10 @@ impl Aviffy {
                 id: exif_image_id,
                 extents: [
                     IlocExtent {
-                        offset: IlocOffset::Relative(0),
+                        offset: IlocOffset::Relative(match alpha_av1_data {
+                            Some(alpha_data) => alpha_data.len(),
+                            _ => 0
+                        } + color_av1_data.len()),
                         len: exif_data.len(),
                     },
                 ].into(),
@@ -531,13 +534,13 @@ impl Aviffy {
             // would have been the only data this file needs.
             mdat: MdatBox {
                 data_chunks,
-            },
-            exif: match exif_data.len() {
-                0 => None,
-                _ => Some(ExifBox {
-                    header_offset: 0,
-                    payload: exif_data.to_vec(),
-                })
+                exif: match exif_data.len() {
+                    0 => None,
+                    _ => Some(ExifBox {
+                        header_offset: 0,
+                        payload: exif_data.to_vec(),
+                    })
+                }
             },
         }
     }
